@@ -31,202 +31,202 @@
 package actions
 
 import (
-  "os"
-  "sort"
-  "strconv"
-  "encoding/json"
+	"encoding/json"
+	"os"
+	"sort"
+	"strconv"
 
-  "github.com/spf13/cobra"
-  "github.com/nderjung/concourse-github-pr-comment-resource/api"
+	"github.com/nderjung/concourse-github-pr-comment-resource/api"
+	"github.com/spf13/cobra"
 )
 
 // CheckCmd ...
 var CheckCmd = &cobra.Command{
-  Use:                   "check",
-  Short:                 "Run the check step",
-  Run:                   doCheckCmd,
-  DisableFlagsInUseLine: true,
+	Use:                   "check",
+	Short:                 "Run the check step",
+	Run:                   doCheckCmd,
+	DisableFlagsInUseLine: true,
 }
 
 // CheckRequest from the check stdin.
 type CheckRequest struct {
-  Source  Source  `json:"source"`
-  Version Version `json:"version"`
+	Source  Source  `json:"source"`
+	Version Version `json:"version"`
 }
 
 // CheckResponse represents the structure Concourse expects on stdout
 type CheckResponse []Version
 
 func doCheckCmd(cmd *cobra.Command, args []string) {
-  decoder := json.NewDecoder(os.Stdin)
-  decoder.DisallowUnknownFields()
+	decoder := json.NewDecoder(os.Stdin)
+	decoder.DisallowUnknownFields()
 
-  // Concourse passes .json on stdin
-  var req CheckRequest
-  if err := decoder.Decode(&req); err != nil {
-    logger.Fatalf("Failed to decode to stdin: %s", err)
-    return
-  }
+	// Concourse passes .json on stdin
+	var req CheckRequest
+	if err := decoder.Decode(&req); err != nil {
+		logger.Fatalf("Failed to decode to stdin: %s", err)
+		return
+	}
 
-  // Perform the check with the given request
-  res, err := Check(req)
-  if err != nil {
-    logger.Fatalf("Failed to connect to Github: %s", err)
-    return
-  }
+	// Perform the check with the given request
+	res, err := Check(req)
+	if err != nil {
+		logger.Fatalf("Failed to connect to Github: %s", err)
+		return
+	}
 
-  var encoder = json.NewEncoder(os.Stdout)
+	var encoder = json.NewEncoder(os.Stdout)
 
-  // Generate a compatible Concourse output
-  if err := doOutput(*res, encoder, logger); err != nil {
-    logger.Fatalf("Failed to encode to stdout: %s", err)
-    return
-  }
+	// Generate a compatible Concourse output
+	if err := doOutput(*res, encoder, logger); err != nil {
+		logger.Fatalf("Failed to encode to stdout: %s", err)
+		return
+	}
 }
 
 func Check(req CheckRequest) (*CheckResponse, error) {
-  client, err := api.NewGithubClient(
-    req.Source.Repository,
-    req.Source.AccessToken,
-    req.Source.SkipSSLVerification,
-    req.Source.GithubEndpoint,
-  )
-  if err != nil {
-    return nil, err
-  }
+	client, err := api.NewGithubClient(
+		req.Source.Repository,
+		req.Source.AccessToken,
+		req.Source.SkipSSLVerification,
+		req.Source.GithubEndpoint,
+	)
+	if err != nil {
+		return nil, err
+	}
 
-  if len(req.Source.When) == 0 {
-    req.Source.When = "latest"
-  }
+	if len(req.Source.When) == 0 {
+		req.Source.When = "latest"
+	}
 
-  var versions CheckResponse
-  var version *Version
+	var versions CheckResponse
+	var version *Version
 
-  // Get all pull requests
-  pulls, err := client.ListPullRequests()
-  if err != nil {
-    return nil, err
-  }
+	// Get all pull requests
+	pulls, err := client.ListPullRequests()
+	if err != nil {
+		return nil, err
+	}
 
-  // Iterate over all pull requests
-  for _, pull := range pulls {
-    version = nil
+	// Iterate over all pull requests
+	for _, pull := range pulls {
+		version = nil
 
-    // Ignore if state not requested
-    if !req.Source.requestsState(*pull.State) {
-      continue
-    }
+		// Ignore if state not requested
+		if !req.Source.requestsState(*pull.State) {
+			continue
+		}
 
-    // Ignore if labels not requested
-    if !req.Source.requestsLabels(pull.Labels) {
-      continue
-    }
+		// Ignore if labels not requested
+		if !req.Source.requestsLabels(pull.Labels) {
+			continue
+		}
 
-    // Ignore if only mergeables requested
-    if req.Source.OnlyMergeable && !*pull.Mergeable {
-      continue
-    }
+		// Ignore if only mergeables requested
+		if req.Source.OnlyMergeable && !*pull.Mergeable {
+			continue
+		}
 
-    // Ignore drafts
-    if req.Source.IgnoreDrafts && *pull.Draft {
-      continue
-    }
+		// Ignore drafts
+		if req.Source.IgnoreDrafts && *pull.Draft {
+			continue
+		}
 
-    // Iterate through all the comments for this PR
-    comments, err := client.ListPullRequestComments(int(*pull.Number))
-    if err != nil {
-      return nil, err
-    }
+		// Iterate through all the comments for this PR
+		comments, err := client.ListPullRequestComments(int(*pull.Number))
+		if err != nil {
+			return nil, err
+		}
 
-    latestCommentIsMatch := false
+		latestCommentIsMatch := false
 
-    for _, comment := range comments {
-      // Ignore comments which do not match comment author association
-      if !req.Source.requestsCommenterAssociation(*comment.AuthorAssociation) {
-        latestCommentIsMatch = false
-        continue
-      }
+		for _, comment := range comments {
+			// Ignore comments which do not match comment author association
+			if !req.Source.requestsCommenterAssociation(*comment.AuthorAssociation) {
+				latestCommentIsMatch = false
+				continue
+			}
 
-      // Ignore comments which do not match regex
-      if !req.Source.requestsCommentRegex(*comment.Body) {
-        latestCommentIsMatch = false
-        continue
-      }
+			// Ignore comments which do not match regex
+			if !req.Source.requestsCommentRegex(*comment.Body) {
+				latestCommentIsMatch = false
+				continue
+			}
 
-      latestCommentIsMatch = true
+			latestCommentIsMatch = true
 
-      // Add the comment ID to the list of versions we want Concourse to see
-      version = &Version{
-        CreatedAt: strconv.FormatInt(comment.CreatedAt.Unix(), 10),
-        PrID:      strconv.Itoa(*pull.Number),
-        CommentID: strconv.FormatInt(*comment.ID, 10),
-      }
+			// Add the comment ID to the list of versions we want Concourse to see
+			version = &Version{
+				CreatedAt: strconv.FormatInt(comment.CreatedAt.Unix(), 10),
+				PrID:      strconv.Itoa(*pull.Number),
+				CommentID: strconv.FormatInt(*comment.ID, 10),
+			}
 
-      if req.Source.When == "all" || req.Source.When == "first" {
-        versions = append(versions, *version)
-      }
+			if req.Source.When == "all" || req.Source.When == "first" {
+				versions = append(versions, *version)
+			}
 
-      // Break the loop now since we found the first match, causing the above
-      // statement to be valid for only "all"
-      if req.Source.When == "first" {
-        break
-      }
-    }
+			// Break the loop now since we found the first match, causing the above
+			// statement to be valid for only "all"
+			if req.Source.When == "first" {
+				break
+			}
+		}
 
-    // Only save the latest
-    if req.Source.When == "latest" && latestCommentIsMatch {
-      versions = append(versions, *version)
-    }
+		// Only save the latest
+		if req.Source.When == "latest" && latestCommentIsMatch {
+			versions = append(versions, *version)
+		}
 
-    // Iterate through all the reviews for this PR
-    reviews, err := client.ListPullRequestReviews(int(*pull.Number))
-    if err != nil {
-      return nil, err
-    }
+		// Iterate through all the reviews for this PR
+		// reviews, err := client.ListPullRequestReviews(int(*pull.Number))
+		// if err != nil {
+		//   return nil, err
+		// }
 
-    latestReviewIsMatch := false
+		// latestReviewIsMatch := false
 
-    for _, review := range reviews {
-      // Ignore reviews which do not approve the
-      if !req.Source.requestsReviewState(*review.State) {
-        latestReviewIsMatch = false
-        continue
-      }
+		// for _, review := range reviews {
+		//   // Ignore reviews which do not approve the
+		//   if !req.Source.requestsReviewState(*review.State) {
+		//     latestReviewIsMatch = false
+		//     continue
+		//   }
 
-      if !req.Source.requestsCommentRegex(*review.Body) {
-        latestReviewIsMatch = false
-        continue
-      }
+		//   if !req.Source.requestsCommentRegex(*review.Body) {
+		//     latestReviewIsMatch = false
+		//     continue
+		//   }
 
-      latestReviewIsMatch = true
+		//   latestReviewIsMatch = true
 
-      // Add the comment ID to the list of versions we want Concourse to see
-      version = &Version{
-        CreatedAt: strconv.FormatInt(review.SubmittedAt.Unix(), 10),
-        PrID:     strconv.Itoa(*pull.Number),
-        ReviewID: strconv.FormatInt(*review.ID, 10),
-      }
+		//   // Add the comment ID to the list of versions we want Concourse to see
+		//   version = &Version{
+		//     CreatedAt: strconv.FormatInt(review.SubmittedAt.Unix(), 10),
+		//     PrID:     strconv.Itoa(*pull.Number),
+		//     ReviewID: strconv.FormatInt(*review.ID, 10),
+		//   }
 
-      if req.Source.When == "all" || req.Source.When == "first" {
-        versions = append(versions, *version)
-      }
+		//   if req.Source.When == "all" || req.Source.When == "first" {
+		//     versions = append(versions, *version)
+		//   }
 
-      // Break the loop now since we found the first match, causing the above
-      // statement to be valid for only "all"
-      if req.Source.When == "first" {
-        break
-      }
-    }
+		//   // Break the loop now since we found the first match, causing the above
+		//   // statement to be valid for only "all"
+		//   if req.Source.When == "first" {
+		//     break
+		//   }
+		// }
 
-    // Only save the latest
-    if req.Source.When == "latest" && latestReviewIsMatch {
-      versions = append(versions, *version)
-    }
-  }
+		// Only save the latest
+		// if req.Source.When == "latest" && latestReviewIsMatch {
+		// 	versions = append(versions, *version)
+		// }
+	}
 
-  sort.Slice(versions, func(i, j int) bool {
-    return versions[i].CreatedAt < versions[j].CreatedAt
-  })
+	sort.Slice(versions, func(i, j int) bool {
+		return versions[i].CreatedAt < versions[j].CreatedAt
+	})
 
-  return &versions, nil
+	return &versions, nil
 }
