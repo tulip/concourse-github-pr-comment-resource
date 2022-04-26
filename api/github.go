@@ -127,12 +127,14 @@ func (c *GithubClient) ListPullRequests() ([]*github.PullRequest, error) {
 		c.Owner,
 		c.Repository,
 		&github.PullRequestListOptions{
-			// We want all states so we can sort through them later
-			State: "all",
+			State: "open",
 			ListOptions: github.ListOptions{
-				// TODO: We need to break up requests and be good API consumers
-				PerPage: 1000,
+				// NOTE: This only takes the latest 20 updated PRs, this is okay because
+				// Everytime there is a new comment, we refresh so we're really only concerned with the latest
+				PerPage: 20,
 			},
+			Sort:      "updated",
+			Direction: "desc",
 		},
 	)
 	if err != nil {
@@ -160,21 +162,39 @@ func (c *GithubClient) GetPullRequest(prID int) (*github.PullRequest, error) {
 // ListPullRequestComments returns the list of comments for the specific pull
 // request given its ID relative to the configured repo
 func (c *GithubClient) ListPullRequestComments(prID int) ([]*github.IssueComment, error) {
-	comments, _, err := c.Client.Issues.ListComments(
-		context.TODO(),
-		c.Owner,
-		c.Repository,
-		prID,
-		&github.IssueListCommentsOptions{
-			ListOptions: github.ListOptions{
-				// TODO: We need to break up requests and be good API consumers
-				PerPage: 1000,
+	const MAX_PER_PAGE = 100
+	var comments []*github.IssueComment
+
+	idx := 0
+
+	for {
+		paged_comments, _, err := c.Client.Issues.ListComments(
+			context.TODO(),
+			c.Owner,
+			c.Repository,
+			prID,
+			&github.IssueListCommentsOptions{
+				ListOptions: github.ListOptions{
+					PerPage: MAX_PER_PAGE,
+					Page:    idx,
+				},
+				// NOTE: This API doesn't allow sorting :/
 			},
-		},
-	)
-	if err != nil {
-		return nil, err
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		comments = append(comments, paged_comments...)
+
+		// I wish there is some indication its the end of all pages but alas...........
+		if len(paged_comments) < MAX_PER_PAGE {
+			break
+		}
+
+		idx += 1
 	}
+
 	return comments, nil
 }
 
